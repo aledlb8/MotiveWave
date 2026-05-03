@@ -1,0 +1,7 @@
+*.dll
+*.bak
+*.exe
+*.jar
+*.ps1
+*.bat
+__pycache__/
