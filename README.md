@@ -33,19 +33,24 @@ The script:
 - Creates `.bak` backups if they do not already exist.
 - Refuses to patch unknown class or launcher patterns.
 - Treats already-patched methods and strings as a no-op.
+- Retargets an already-patched launcher if the jar filename changes.
+- Bypasses the native launcher image check that rejects a modified jar.
 - Removes stale jar signature artifacts after bytecode edits.
 - Recomputes the PE checksum after editing `MotiveWave.exe`.
 
-The patched `MotiveWave.exe` expects `MotiveWave.jar` beside it. Keep the original `lib`,
-`javafx`, and `jre` directories next to the launcher, because the launcher still
-uses those directories for dependencies and the JVM.
+The patched `MotiveWave.exe` uses the jar path you pass to the script. If you run
+the patcher with `.\lib\MotiveWave.jar`, the launcher stays pointed at
+`lib\MotiveWave.jar`. If you run it with `.\MotiveWave.jar`, the launcher expects
+`MotiveWave.jar` beside the exe. Keep the original `lib`, `javafx`, and `jre`
+directories next to the launcher, because the launcher still uses those
+directories for dependencies and the JVM.
 
 ## Files And Hashes
 
 Original files observed during analysis:
 
 ```text
-MotiveWave.jar.bak
+MotiveWave.jar
 SHA256 7B42C6CE1AFCAA5BDDB5F3C45B2CD40CC420C23EEEE94F84DDC8DAD946C3FFAA
 
 MotiveWave.exe
@@ -59,7 +64,7 @@ MotiveWave.jar
 SHA256 820C16A7303CC920C3661CB50F237575942175D6248B3E6AF84DA9D1309C6678
 
 MotiveWave.exe
-SHA256 DE9DDF2AD5A3DBFFCD14EC8170F08574C3847CE8B398C59F03FDB4F5820F795B
+SHA256 8FCCED7C34FCD1DFB2383798E98585F76A3A226C22EBF0AA915E47ABF081E7FF
 ```
 
 ## License Service Patch
@@ -227,12 +232,24 @@ lib\MotiveWave.jar
 -javaagent:lib\MotiveWave.jar
 ```
 
-The patcher rewrites the ASCII and UTF-16 embedded launcher strings to:
+The patcher rewrites the ASCII and UTF-16 embedded launcher strings to the jar
+path supplied on the command line. For example, using `.\lib\MotiveWave.jar`
+keeps:
 
 ```text
-MotiveWave.jar
--javaagent:MotiveWave.jar
+lib\MotiveWave.jar
+-javaagent:lib\MotiveWave.jar
 ```
+
+The launcher also computes and compares an image value for the application jar.
+After the jar bytecode is patched, that check reaches the dialog:
+
+```text
+Unable to load MotiveWave, image is corrupted.
+```
+
+The patcher changes that native branch so the launcher continues into the normal
+startup path with the patched jar.
 
 ## Validation Performed
 

@@ -6,8 +6,9 @@ Patch the MotiveWave:
 
 The JAR patch is bytecode-aware: it parses the class files inside the archive
 and rewrites only the known target methods/ranges. The EXE patch rewrites the
-embedded launcher jar path from lib\\MotiveWave.jar to MotiveWave.jar so the patched
-jar can be shipped beside the launcher for the challenge submission.
+embedded launcher jar path from lib\\MotiveWave.jar to the jar filename passed on
+the command line, then bypasses the native launcher image check that rejects the
+modified jar.
 """
 
 from __future__ import annotations
@@ -585,37 +586,85 @@ def fixed_width(old: bytes, new: bytes) -> bytes:
 @dataclass(frozen=True)
 class BinaryPatch:
     name: str
-    original: bytes
+    candidates: tuple[bytes, ...]
     patched: bytes
     expected_count: int = 1
     expected_patched_count: int = 1
+    exclude_agent_prefix: bool = False
 
     def __post_init__(self) -> None:
-        if len(self.original) != len(self.patched):
-            raise ValueError(f"{self.name}: original and patched lengths differ")
+        for candidate in self.candidates:
+            if len(candidate) != len(self.patched):
+                raise ValueError(f"{self.name}: original and patched lengths differ")
 
 
-EXE_PATCHES = [
-    BinaryPatch(
-        "UTF-16 javaagent jar path uses MotiveWave.jar",
-        "-javaagent:lib\\MotiveWave.jar".encode("utf-16le"),
-        fixed_width(
-            "-javaagent:lib\\MotiveWave.jar".encode("utf-16le"),
-            "-javaagent:MotiveWave.jar".encode("utf-16le"),
+def launcher_jar_target(jar_path: Path, exe_path: Path) -> str:
+    try:
+        target = jar_path.resolve().relative_to(exe_path.resolve().parent)
+    except ValueError:
+        target = Path(jar_path.name)
+
+    text = str(target).replace("/", "\\")
+    if text.startswith(".\\"):
+        text = text[2:]
+    if not text.lower().endswith(".jar"):
+        raise ValueError(f"launcher jar target must be a jar path, got {text!r}")
+    try:
+        text.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ValueError(f"launcher jar target must be ASCII, got {text!r}") from exc
+    return text
+
+
+def padded(width_sample: bytes, text: str) -> bytes:
+    return fixed_width(width_sample, text.encode("ascii"))
+
+
+def padded_wide(width_sample: bytes, text: str) -> bytes:
+    return fixed_width(width_sample, text.encode("utf-16le"))
+
+
+def make_exe_patches(jar_target: str) -> list[BinaryPatch]:
+    if "/" in jar_target or not jar_target.lower().endswith(".jar"):
+        raise ValueError(f"launcher jar target must be a jar path, got {jar_target!r}")
+
+    old_agent = b"-javaagent:lib\\MotiveWave.jar"
+    old_agent_wide = "-javaagent:lib\\MotiveWave.jar".encode("utf-16le")
+    old_image = b"lib\\MotiveWave.jar"
+
+    known_targets = ("lib\\MotiveWave.jar", "MotiveWave.jar", "wave.jar")
+    agent_candidates = tuple(padded(old_agent, f"-javaagent:{target}") for target in known_targets)
+    wide_agent_candidates = tuple(
+        padded_wide(old_agent_wide, f"-javaagent:{target}") for target in known_targets
+    )
+    image_candidates = tuple(padded(old_image, target) for target in known_targets)
+
+    image_guard_original = bytes.fromhex("3B FB 74 23 45 33 C9 4C 8D 05")
+    image_guard_patched = bytes.fromhex("3B FB EB 23 45 33 C9 4C 8D 05")
+
+    return [
+        BinaryPatch(
+            f"UTF-16 javaagent jar path uses {jar_target}",
+            wide_agent_candidates,
+            padded_wide(old_agent_wide, f"-javaagent:{jar_target}"),
         ),
-    ),
-    BinaryPatch(
-        "ASCII javaagent jar path uses MotiveWave.jar",
-        b"-javaagent:lib\\MotiveWave.jar",
-        fixed_width(b"-javaagent:lib\\MotiveWave.jar", b"-javaagent:MotiveWave.jar"),
-    ),
-    BinaryPatch(
-        "launcher image jar path uses MotiveWave.jar",
-        b"lib\\MotiveWave.jar",
-        fixed_width(b"lib\\MotiveWave.jar", b"MotiveWave.jar"),
-        expected_patched_count=2,
-    ),
-]
+        BinaryPatch(
+            f"ASCII javaagent jar path uses {jar_target}",
+            agent_candidates,
+            padded(old_agent, f"-javaagent:{jar_target}"),
+        ),
+        BinaryPatch(
+            f"launcher image jar path uses {jar_target}",
+            image_candidates,
+            padded(old_image, jar_target),
+            exclude_agent_prefix=True,
+        ),
+        BinaryPatch(
+            "native launcher image-integrity guard is bypassed",
+            (image_guard_original,),
+            image_guard_patched,
+        ),
+    ]
 
 
 def pe_checksum_offset(data: bytes | bytearray) -> int:
@@ -655,31 +704,50 @@ def update_pe_checksum(data: bytearray) -> tuple[int, int, int]:
     return old, new, computed_offset
 
 
-def apply_binary_patch(data: bytearray, patch: BinaryPatch) -> tuple[int, int]:
-    original_count = data.count(patch.original)
-    patched_count = data.count(patch.patched)
+def matching_offsets(data: bytearray, needle: bytes, *, exclude_agent_prefix: bool) -> list[int]:
+    offsets: list[int] = []
+    start = 0
+    while True:
+        offset = data.find(needle, start)
+        if offset < 0:
+            return offsets
+        agent_substring = bytes(data[offset - 11 : offset]) == b"-javaagent:"
+        lib_substring = bytes(data[offset - 4 : offset]) == b"lib\\"
+        if not exclude_agent_prefix or (not agent_substring and not lib_substring):
+            offsets.append(offset)
+        start = offset + 1
 
-    if original_count == 0 and patched_count == patch.expected_patched_count:
+
+def apply_binary_patch(data: bytearray, patch: BinaryPatch) -> tuple[int, int]:
+    source_offsets: list[tuple[int, bytes]] = []
+    for candidate in patch.candidates:
+        if candidate == patch.patched:
+            continue
+        for offset in matching_offsets(
+            data, candidate, exclude_agent_prefix=patch.exclude_agent_prefix
+        ):
+            source_offsets.append((offset, candidate))
+
+    patched_count = len(
+        matching_offsets(data, patch.patched, exclude_agent_prefix=patch.exclude_agent_prefix)
+    )
+
+    if not source_offsets and patched_count == patch.expected_patched_count:
         return 0, patched_count
-    if original_count != patch.expected_count:
+    if len(source_offsets) != patch.expected_count:
         raise ValueError(
             f"{patch.name}: expected {patch.expected_count} original occurrence(s), "
-            f"found {original_count}; patched occurrences found {patched_count}"
+            f"found {len(source_offsets)}; patched occurrences found {patched_count}"
         )
 
-    start = 0
     replaced = 0
-    while True:
-        offset = data.find(patch.original, start)
-        if offset < 0:
-            break
-        data[offset : offset + len(patch.original)] = patch.patched
-        start = offset + len(patch.patched)
+    for offset, candidate in source_offsets:
+        data[offset : offset + len(candidate)] = patch.patched
         replaced += 1
     return replaced, 0
 
 
-def patch_exe(path: Path, *, dry_run: bool, make_backup: bool) -> bool:
+def patch_exe(path: Path, jar_target: str, *, dry_run: bool, make_backup: bool) -> bool:
     print(f"\n== {path}")
     if not path.exists():
         raise FileNotFoundError(path)
@@ -688,7 +756,8 @@ def patch_exe(path: Path, *, dry_run: bool, make_backup: bool) -> bool:
     print(f"  sha256 before: {sha256(path)}")
 
     changed = False
-    for patch in EXE_PATCHES:
+    print(f"  launcher jar target: {jar_target}")
+    for patch in make_exe_patches(jar_target):
         replaced, already = apply_binary_patch(data, patch)
         if replaced:
             print(f"  patching: {patch.name}")
@@ -728,7 +797,12 @@ def main(argv: list[str]) -> int:
 
     try:
         patch_jar(args.wave_jar, dry_run=args.dry_run, make_backup=not args.no_backup)
-        patch_exe(args.wave_exe, dry_run=args.dry_run, make_backup=not args.no_backup)
+        patch_exe(
+            args.wave_exe,
+            launcher_jar_target(args.wave_jar, args.wave_exe),
+            dry_run=args.dry_run,
+            make_backup=not args.no_backup,
+        )
     except Exception as exc:
         print(f"\nERROR: {exc}", file=sys.stderr)
         return 1
