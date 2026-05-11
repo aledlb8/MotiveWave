@@ -3,14 +3,32 @@
 Download the installer `motivewave_setup7.0.23.exe` file from the release page. It's the original file, I just upload it so you can have the version of motivewave that this patch was made to work with.
 
 # How to use
+Detailed instructions for beginners since people were struggling with installation.
 
-In order to have the "free" license you can either download the already patched files from the release page or you can use the python script to do it yourself. The files needed are in `C:\Program Files (x86)\MotiveWave` and `C:\Program Files (x86)\MotiveWave\bin` or wherever you installed motivewave.
+1. If you have motivewave installed, please delete it completely from your system, make sure you save your workspace. Go to Motivewave `File -> Backup` and save.
+2. Once its completely deleted, please downlaod the installer `motivewave_setup7.0.23.exe` file from the release page, additionally download `MotiveWave.jar` and `MotiveWave.exe` both are in the [releases page here.](https://github.com/aledlb8/MotiveWave/releases)
+3. Once those are downloaded, launch `motivewave_setup7.0.23.exe` and follow instructions to install motivewave on your device.
+4. Then, go to `C:\Program Files (x86)\MotiveWave` and drag and drop the downloaded `MotiveWave.exe` file. Then head to `C:\Program Files (x86)\MotiveWave\lib` and place the downloaded `MotiveWave.jar` file in here.
+5. Launch Motivewave!
+6. Agree to everything, when it asks for your **LICENSE KEY** enter a random key for example: AAAA-AAAA-AAAA-AAAA-AAAA-AAAA
+7. Follow the steps to setup the workspace and configure, you **will need your own** _data feed!!_
+
+### ADDITIONAL STEP:
+For some users it might generate *HUGE* log files located at: `C:\Users\yourusername\AppData\Roaming\MotiveWave\output` to fix:
+1. Go to `C:\Users\yourusername\AppData\Roaming\MotiveWave`
+2. Edit the file `startup.ini` add the following line `VM_ARGS=-Dprism.verbose=false -Dprism.forceUploadingPainter=false`
+
+If it still forms big log files after restarting, then you'll just have to manually delete them regularly (folder can be opened from the login screen:)
+<img width="887" height="547" alt="image" src="https://github.com/user-attachments/assets/e09ee891-4a57-4c07-b465-dd7fde78a987" />
+
 
 ## Other Notes
 
 I don't know if this patch can work on future versions, the current version it works is v7.0.23, if motivewave updates and the patch doesn't work just create an issue and I'll see what I can do, or if you fix it, open a pull request.
 
-# MotiveWave Patch Notes
+# For advanced users:
+
+## MotiveWave Patch 
 
 This directory contains a repeatable patch for the MotiveWave crackme challenge.
 The target files are:
